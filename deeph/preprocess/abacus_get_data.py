@@ -61,10 +61,13 @@ class OrbAbacus2DeepH:
         return block_lefts @ mat @ block_rights.T
 
 def abacus_parse(input_path, output_path, data_name, only_S=False, get_r=False):
+    #获取input和output的绝对路径，并按output的绝对路径建立文件夹
     input_path = os.path.abspath(input_path)
     output_path = os.path.abspath(output_path)
     os.makedirs(output_path, exist_ok=True)
 
+
+    #检查文件中是否有target的内容，有的话返回line，没有的话返回None
     def find_target_line(f, target):
         line = f.readline()
         while line:
@@ -72,10 +75,14 @@ def abacus_parse(input_path, output_path, data_name, only_S=False, get_r=False):
                 return line
             line = f.readline()
         return None
+    
+    #用only_S参数判断应该读哪个日志文件
     if only_S:
         log_file_name = "running_get_S.log"
     else:
         log_file_name = "running_scf.log"
+
+    
     with open(os.path.join(input_path, data_name, log_file_name), 'r') as f:
         f.readline()
         line = f.readline()
@@ -192,28 +199,58 @@ def abacus_parse(input_path, output_path, data_name, only_S=False, get_r=False):
             f.write('\n')
 
     U_orbital = OrbAbacus2DeepH()
+
+
     def parse_matrix(matrix_path, factor, spinful=False):
+        """
+        Parameter:
+            matrix_path: the file path
+                .csr file need to be read
+            factor: float
+                the physical unit of the origin data in data-HR-sparse_SPIN0.csr(data-SR-sparse_SPIN0.csr) is Ry
+                this factor is used to convert data unit 
+            spinful: bool
+        """
         matrix_dict = dict()
         with open(matrix_path, 'r') as f:
+            # the first part is used to read the structure of the Matrix
+            # the dim of Matrix presents the number of orbits
+            # finish the initialize of norbits which is the number of orbits
             line = f.readline() # read "Matrix Dimension of ..."
             if not "Matrix Dimension of" in line:
                 line = f.readline() # ABACUS >= 3.0
                 assert "Matrix Dimension of" in line
             f.readline() # read "Matrix number of ..."
             norbits = int(line.split()[-1])
+
+            # the second part is used to read data in the file
+            # every Matrix in the file is represented in four lines(csr form)
+            # the first line is the lattice vector(3 components) and the number of element in this Matrix
+            # the second line is the data in Matrix
+            # the third line is the line index of the elements in Matrix
+            # the forth line is the number of elements before the row index
             for line in f:
                 line1 = line.split()
+                # judge if the reading job is completed
                 if len(line1) == 0:
                     break
+                # the element number in the Matrix this code is going to read
                 num_element = int(line1[3])
+
                 if num_element != 0:
+                    # read Matrix in csr form
                     R_cur = np.array(line1[:3]).astype(int)
                     line2 = f.readline().split()
                     line3 = f.readline().split()
                     line4 = f.readline().split()
+                    # use function csr_matrix() in scipy to convert csr form to the norm one
+                    # if the result hasn't considered SOC effect, convert it directly
+                    # or the data in Matrix need some operation 
+                    # because of different form of complex number here from the one in python
                     if not spinful:
                         hamiltonian_cur = csr_matrix((np.array(line2).astype(float), np.array(line3).astype(int),
                                                       np.array(line4).astype(int)), shape=(norbits, norbits)).toarray()
+                    
                     else:
                         line2 = np.char.replace(line2, '(', '')
                         line2 = np.char.replace(line2, ')', 'j')
@@ -221,6 +258,8 @@ def abacus_parse(input_path, output_path, data_name, only_S=False, get_r=False):
                         line2 = np.char.replace(line2, '+-', '-')
                         hamiltonian_cur = csr_matrix((np.array(line2).astype(np.complex128), np.array(line3).astype(int),
                                                       np.array(line4).astype(int)), shape=(norbits, norbits)).toarray()
+                    #nsites is the number of atoms defined in 128 line in this file
+                    #site_norbits_cumsum
                     for index_site_i in range(nsites):
                         for index_site_j in range(nsites):
                             key_str = f"[{R_cur[0]}, {R_cur[1]}, {R_cur[2]}, {index_site_i + 1}, {index_site_j + 1}]"
@@ -242,6 +281,8 @@ def abacus_parse(input_path, output_path, data_name, only_S=False, get_r=False):
                                                           orbital_types_dict[element[index_site_j]] * 2)
                             matrix_dict[key_str] = mat * factor
         return matrix_dict, norbits
+
+
 
     if only_S:
         overlap_dict, tmp = parse_matrix(os.path.join(input_path, "SR.csr"), 1)
